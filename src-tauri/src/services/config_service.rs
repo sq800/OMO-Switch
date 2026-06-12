@@ -10,7 +10,11 @@ const LEGACY_CONFIG_BASENAME: &str = "oh-my-opencode.json";
 const LEGACY_CONFIG_BASENAME_JSONC: &str = "oh-my-opencode.jsonc";
 
 fn get_config_dir() -> Result<PathBuf, String> {
-    let home = dirs::home_dir().ok_or_else(|| i18n::tr_current("home_env_var_error"))?;
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .ok()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| i18n::tr_current("home_env_var_error"))?;
     Ok(home.join(".config").join("opencode"))
 }
 
