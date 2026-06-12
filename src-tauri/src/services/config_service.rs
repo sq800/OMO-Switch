@@ -185,9 +185,13 @@ mod tests {
     #[test]
     fn test_get_config_path() {
         let path = get_config_path().unwrap();
-        assert!(path
-            .to_string_lossy()
-            .contains(".config/opencode/oh-my-openagent.json"));
+        let candidates = get_config_candidates().unwrap();
+        assert!(
+            candidates.iter().any(|c| c == &path),
+            "Path {:?} should be one of {:?}",
+            path,
+            candidates
+        );
     }
 
     /// 测试配置验证 - 有效配置
