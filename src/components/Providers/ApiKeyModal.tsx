@@ -8,7 +8,7 @@ import { getProviderConfig, setProviderApiKey, type ProviderInfo } from '../../s
 interface ApiKeyModalProps {
   provider: ProviderInfo;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: () => Promise<void>;
 }
 
 const PROVIDER_TYPE_OPTIONS = [
@@ -78,7 +78,7 @@ export function ApiKeyModal({ provider, onClose, onSuccess }: ApiKeyModalProps) 
         providerType,
       );
       toast.success(t('provider.saveSuccess'));
-      onSuccess();
+      await onSuccess();
       onClose();
     } catch (err) {
       toast.error(t('provider.saveFailed'));

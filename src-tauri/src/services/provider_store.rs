@@ -5,6 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::services::config_service::write_string_atomically;
+use crate::services::get_home_dir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthEntry {
@@ -53,8 +54,7 @@ pub struct ProviderPresetEntry {
 }
 
 pub fn get_auth_file_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 环境变量".to_string())?;
-    Ok(PathBuf::from(home)
+    Ok(get_home_dir()?
         .join(".local")
         .join("share")
         .join("opencode")
@@ -62,16 +62,14 @@ pub fn get_auth_file_path() -> Result<PathBuf, String> {
 }
 
 pub fn get_opencode_config_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 环境变量".to_string())?;
-    Ok(PathBuf::from(home)
+    Ok(get_home_dir()?
         .join(".config")
         .join("opencode")
         .join("opencode.json"))
 }
 
 fn get_omo_cache_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 环境变量".to_string())?;
-    Ok(PathBuf::from(home).join(".cache").join("oh-my-opencode"))
+    Ok(get_home_dir()?.join(".cache").join("oh-my-opencode"))
 }
 
 pub fn get_provider_models_path() -> Result<PathBuf, String> {
@@ -83,8 +81,7 @@ pub fn get_connected_providers_path() -> Result<PathBuf, String> {
 }
 
 pub fn get_provider_icon_cache_path(provider_id: &str) -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 环境变量".to_string())?;
-    Ok(PathBuf::from(home)
+    Ok(get_home_dir()?
         .join(".cache")
         .join("oh-my-opencode")
         .join("provider-icons")

@@ -56,6 +56,8 @@ export function MainLayout({ children }: MainLayoutProps) {
     toggleSidebar 
   } = useUIStore();
   const startPreload = usePreloadStore(s => s.startPreload);
+  const refreshModels = usePreloadStore(s => s.refreshModels);
+  const refreshProviderCatalog = usePreloadStore(s => s.refreshProviderCatalog);
   
   const [appName, setAppName] = useState('OMO Switch');
   const [appVersion, setAppVersion] = useState('1.2.9');
@@ -78,6 +80,37 @@ export function MainLayout({ children }: MainLayoutProps) {
       clearTimeout(preloadTimer);
     };
   }, [startPreload]);
+
+  useEffect(() => {
+    const providerRefreshTimer = setInterval(() => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      void refreshProviderCatalog();
+    }, 5 * 60 * 1000);
+
+    const modelRefreshTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshModels();
+      }
+    }, 15 * 60 * 1000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void Promise.allSettled([
+          refreshProviderCatalog(),
+          refreshModels(),
+        ]);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(providerRefreshTimer);
+      clearInterval(modelRefreshTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshModels, refreshProviderCatalog]);
 
   const currentPageInfo = navItems.find(item => item.id === currentPage);
   const CurrentIcon = currentPageInfo?.icon || Bot;

@@ -24,6 +24,7 @@ sha2 = "0.10"
 regex = "1"
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 json5 = "0.4"
+which = "7"
 
 [features]
 default = ["custom-protocol"]

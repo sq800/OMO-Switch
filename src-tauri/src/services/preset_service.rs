@@ -67,9 +67,7 @@ const META_FIELD: &str = "__meta__";
 /// 获取预设目录路径
 /// 返回 ~/.config/OMO-Switch/presets/ 的完整路径
 pub fn get_presets_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-
-    let presets_dir = PathBuf::from(home)
+    let presets_dir = crate::services::get_home_dir()?
         .join(".config")
         .join("OMO-Switch")
         .join("presets");
@@ -523,9 +521,7 @@ mod tests {
         let result = get_presets_dir();
         assert!(result.is_ok());
         let path = result.unwrap();
-        assert!(path
-            .to_string_lossy()
-            .contains(".config/OMO-Switch/presets"));
+        assert!(path.ends_with(PathBuf::from(".config").join("OMO-Switch").join("presets")));
     }
 
     #[test]
@@ -666,8 +662,8 @@ mod tests {
 
 /// 获取当前激活的预设名称
 pub fn get_active_preset() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = std::path::PathBuf::from(home)
+    let path = crate::services::get_home_dir()
+        .ok()?
         .join(".config")
         .join("OMO-Switch")
         .join("active_preset");
@@ -679,8 +675,7 @@ pub fn get_active_preset() -> Option<String> {
 
 /// 设置当前激活的预设名称
 pub fn set_active_preset(name: &str) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "无法获取 HOME 环境变量")?;
-    let dir = std::path::PathBuf::from(home)
+    let dir = crate::services::get_home_dir()?
         .join(".config")
         .join("OMO-Switch");
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {}", e))?;

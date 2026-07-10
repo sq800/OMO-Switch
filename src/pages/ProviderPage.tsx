@@ -10,50 +10,26 @@ import { CustomProviderModal } from '../components/Providers/CustomProviderModal
 import { KeyRound, Wifi, Settings, RefreshCw } from 'lucide-react';
 import { cn } from '../components/common/cn';
 import { usePreloadStore } from '../store/preloadStore';
-import { getProviderStatus, deleteProviderAuth, type ProviderInfo } from '../services/tauri';
+import { deleteProviderAuth, type ProviderInfo } from '../services/tauri';
 
 type TabType = 'status' | 'config';
 
 export function ProviderPage() {
   const { t } = useTranslation();
   const refreshModels = usePreloadStore((s) => s.refreshModels);
+  const providers = usePreloadStore((s) => s.providerCatalog.data) || [];
+  const providerCatalogRefreshing = usePreloadStore((s) => s.providerCatalog.refreshing);
+  const providerCatalogError = usePreloadStore((s) => s.providerCatalog.error);
+  const refreshProviderCatalog = usePreloadStore((s) => s.refreshProviderCatalog);
   const [activeTab, setActiveTab] = useState<TabType>('status');
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [isConfigLoading, setIsConfigLoading] = useState(false);
-  const [isConfigRefreshing, setIsConfigRefreshing] = useState(false);
   const [isStatusRefreshing, setIsStatusRefreshing] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<ProviderInfo | null>(null);
   const [showCustomModal, setShowCustomModal] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<ProviderInfo | null>(null);
 
   useEffect(() => {
-    if (activeTab === 'config' && !configLoaded) {
-      void loadData();
-    }
-  }, [activeTab, configLoaded]);
-
-  const loadData = async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (silent) {
-      setIsConfigRefreshing(true);
-    } else {
-      setIsConfigLoading(true);
-    }
-    try {
-      const providerList = await getProviderStatus();
-      setProviders(providerList);
-      setConfigLoaded(true);
-    } catch (err) {
-      toast.error(t('provider.loadFailed'));
-      console.error('Failed to load provider data:', err);
-    } finally {
-      if (silent) {
-        setIsConfigRefreshing(false);
-      } else {
-        setIsConfigLoading(false);
-      }
-    }
-  };
+    void refreshProviderCatalog();
+  }, [refreshProviderCatalog]);
 
   const handleConfigure = (provider: ProviderInfo) => {
     setSelectedProvider(provider);
@@ -72,8 +48,10 @@ export function ProviderPage() {
     try {
       await deleteProviderAuth(deleteConfirm.id);
       toast.success(t('provider.deleteSuccess'));
-      await loadData({ silent: configLoaded });
-      await refreshModels();
+      await Promise.all([
+        refreshProviderCatalog(true),
+        refreshModels(true),
+      ]);
     } catch (err) {
       toast.error(t('provider.deleteFailed'));
       console.error('Failed to delete provider auth:', err);
@@ -86,10 +64,10 @@ export function ProviderPage() {
     setShowCustomModal(true);
   };
 
-  const handleSuccess = () => {
-    void Promise.allSettled([
-      loadData({ silent: configLoaded }),
-      refreshModels(),
+  const handleSuccess = async () => {
+    await Promise.allSettled([
+      refreshProviderCatalog(true),
+      refreshModels(true),
     ]);
   };
 
@@ -97,7 +75,7 @@ export function ProviderPage() {
     if (activeTab === 'status') {
       setIsStatusRefreshing(true);
       try {
-        await refreshModels();
+        await refreshModels(true);
       } catch (err) {
         toast.error(t('provider.loadFailed'));
         console.error('Failed to refresh provider status models:', err);
@@ -107,7 +85,7 @@ export function ProviderPage() {
       return;
     }
 
-    await loadData({ silent: configLoaded });
+    await refreshProviderCatalog(true);
   };
 
   const configuredProviders = providers.filter(p => p.is_configured);
@@ -132,12 +110,12 @@ export function ProviderPage() {
           variant="ghost"
           size="sm"
           onClick={handleRefresh}
-          disabled={isStatusRefreshing || isConfigLoading || isConfigRefreshing}
+          disabled={isStatusRefreshing || providerCatalogRefreshing}
         >
           <RefreshCw
             className={cn(
               'w-4 h-4 mr-2',
-              (isStatusRefreshing || isConfigLoading || isConfigRefreshing) && 'animate-spin'
+              (isStatusRefreshing || providerCatalogRefreshing) && 'animate-spin'
             )}
           />
           {t('common.refresh')}
@@ -175,12 +153,12 @@ export function ProviderPage() {
         <ProviderStatus />
       ) : (
         <>
-          {isConfigRefreshing && (
+          {providerCatalogRefreshing && providers.length > 0 && (
             <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 px-4 py-2 text-sm text-indigo-700">
               {t('common.loading')}
             </div>
           )}
-          {!configLoaded && isConfigLoading ? (
+          {providers.length === 0 && providerCatalogRefreshing ? (
             <div className="space-y-4 animate-pulse">
               <div className="h-12 bg-slate-200 rounded-xl" />
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -188,6 +166,14 @@ export function ProviderPage() {
                   <div key={i} className="h-32 bg-slate-200 rounded-xl" />
                 ))}
               </div>
+            </div>
+          ) : providers.length === 0 && providerCatalogError ? (
+            <div className="py-12 text-center">
+              <p className="mb-4 text-sm text-rose-600">{t('provider.loadFailed')}</p>
+              <Button variant="secondary" onClick={() => refreshProviderCatalog(true)}>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                {t('common.retry')}
+              </Button>
             </div>
           ) : (
             <ProviderList

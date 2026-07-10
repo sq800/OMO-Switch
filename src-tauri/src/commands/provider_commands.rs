@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use crate::services::{provider_service, provider_store};
 
@@ -31,6 +32,15 @@ const PROVIDER_DOMAINS: &[(&str, &str)] = &[
     ("opencode", "opencode.ai"),
 ];
 
+static PROVIDER_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn with_provider_write_lock<T>(operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _guard = PROVIDER_WRITE_LOCK
+        .lock()
+        .map_err(|_| "供应商配置写入锁已损坏".to_string())?;
+    operation()
+}
+
 pub type ProviderInfo = provider_service::ProviderInfo;
 pub type ProviderConfigSnapshot = provider_service::ProviderConfigSnapshot;
 pub type ConnectionTestResult = provider_service::ConnectionTestResult;
@@ -41,13 +51,17 @@ fn get_provider_icon_cache_path(provider_id: &str) -> Result<std::path::PathBuf,
 }
 
 #[tauri::command]
-pub fn get_provider_status() -> Result<Vec<ProviderInfo>, String> {
-    provider_service::get_provider_status()
+pub async fn get_provider_status() -> Result<Vec<ProviderInfo>, String> {
+    tokio::task::spawn_blocking(provider_service::get_provider_status)
+        .await
+        .map_err(|e| format!("获取供应商状态失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_provider_config(provider_id: String) -> Result<ProviderConfigSnapshot, String> {
-    provider_service::get_provider_config(provider_id)
+pub async fn get_provider_config(provider_id: String) -> Result<ProviderConfigSnapshot, String> {
+    tokio::task::spawn_blocking(move || provider_service::get_provider_config(provider_id))
+        .await
+        .map_err(|e| format!("获取供应商配置失败: {}", e))?
 }
 
 #[tauri::command]
@@ -60,31 +74,55 @@ pub fn test_provider_connection(
 }
 
 #[tauri::command]
-pub fn set_provider_api_key(
+pub async fn set_provider_api_key(
     provider_id: String,
     api_key: String,
     base_url: Option<String>,
     provider_type: Option<String>,
 ) -> Result<(), String> {
-    provider_service::set_provider_api_key(provider_id, api_key, base_url, provider_type)
+    tokio::task::spawn_blocking(move || {
+        with_provider_write_lock(|| {
+            provider_service::set_provider_api_key(provider_id, api_key, base_url, provider_type)
+        })
+    })
+    .await
+    .map_err(|e| format!("保存供应商配置失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn delete_provider_auth(provider_id: String) -> Result<(), String> {
-    provider_service::delete_provider_auth(provider_id)
+pub async fn delete_provider_auth(provider_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        with_provider_write_lock(|| provider_service::delete_provider_auth(provider_id))
+    })
+    .await
+    .map_err(|e| format!("删除供应商认证失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn add_custom_provider(
+pub async fn add_custom_provider(
     name: String,
     api_key: String,
     base_url: String,
 ) -> Result<ProviderInfo, String> {
-    provider_service::add_custom_provider(name, api_key, base_url)
+    tokio::task::spawn_blocking(move || {
+        with_provider_write_lock(|| provider_service::add_custom_provider(name, api_key, base_url))
+    })
+    .await
+    .map_err(|e| format!("添加自定义供应商失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn add_custom_model(provider_id: String, model_id: String) -> Result<(), String> {
+pub async fn add_custom_model(provider_id: String, model_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || add_custom_model_blocking(provider_id, model_id))
+        .await
+        .map_err(|e| format!("添加自定义模型失败: {}", e))?
+}
+
+fn add_custom_model_blocking(provider_id: String, model_id: String) -> Result<(), String> {
+    with_provider_write_lock(|| add_custom_model_inner(provider_id, model_id))
+}
+
+fn add_custom_model_inner(provider_id: String, model_id: String) -> Result<(), String> {
     let mut config = provider_store::read_opencode_config()?;
 
     if config.get("provider").is_none() {
@@ -111,7 +149,17 @@ pub fn add_custom_model(provider_id: String, model_id: String) -> Result<(), Str
 }
 
 #[tauri::command]
-pub fn remove_custom_model(provider_id: String, model_id: String) -> Result<(), String> {
+pub async fn remove_custom_model(provider_id: String, model_id: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || remove_custom_model_blocking(provider_id, model_id))
+        .await
+        .map_err(|e| format!("删除自定义模型失败: {}", e))?
+}
+
+fn remove_custom_model_blocking(provider_id: String, model_id: String) -> Result<(), String> {
+    with_provider_write_lock(|| remove_custom_model_inner(provider_id, model_id))
+}
+
+fn remove_custom_model_inner(provider_id: String, model_id: String) -> Result<(), String> {
     let mut config = provider_store::read_opencode_config()?;
 
     let provider = config
@@ -141,12 +189,20 @@ pub fn remove_custom_model(provider_id: String, model_id: String) -> Result<(), 
 }
 
 #[tauri::command]
-pub fn get_custom_models() -> Result<HashMap<String, Vec<String>>, String> {
-    Ok(provider_store::get_custom_models())
+pub async fn get_custom_models() -> Result<HashMap<String, Vec<String>>, String> {
+    tokio::task::spawn_blocking(|| Ok(provider_store::get_custom_models()))
+        .await
+        .map_err(|e| format!("获取自定义模型失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn get_provider_icon(provider_id: String) -> Result<Option<String>, String> {
+pub async fn get_provider_icon(provider_id: String) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || get_provider_icon_blocking(provider_id))
+        .await
+        .map_err(|e| format!("获取供应商图标失败: {}", e))?
+}
+
+fn get_provider_icon_blocking(provider_id: String) -> Result<Option<String>, String> {
     let cache_path = get_provider_icon_cache_path(&provider_id)?;
     if cache_path.exists() {
         return Ok(Some(cache_path.to_string_lossy().to_string()));
@@ -311,7 +367,7 @@ mod tests {
         std::fs::create_dir_all(&auth_dir).expect("创建 auth 目录失败");
         std::fs::write(auth_dir.join("auth.json"), "{invalid json").expect("写入 auth.json 失败");
 
-        let result = get_provider_status();
+        let result = provider_service::get_provider_status();
 
         unsafe {
             if let Some(home) = original_home {
@@ -347,7 +403,8 @@ mod tests {
             std::env::set_var("HOME", &temp_dir);
         }
 
-        let result = add_custom_model("test-provider".to_string(), "test-model-1".to_string());
+        let result =
+            add_custom_model_blocking("test-provider".to_string(), "test-model-1".to_string());
 
         unsafe {
             if let Some(home) = original_home {
@@ -384,9 +441,11 @@ mod tests {
             std::env::set_var("HOME", &temp_dir);
         }
 
-        let result1 = add_custom_model("test-provider".to_string(), "test-model-2".to_string());
+        let result1 =
+            add_custom_model_blocking("test-provider".to_string(), "test-model-2".to_string());
         assert!(result1.is_ok());
-        let result2 = add_custom_model("test-provider".to_string(), "test-model-2".to_string());
+        let result2 =
+            add_custom_model_blocking("test-provider".to_string(), "test-model-2".to_string());
         assert!(result2.is_ok());
 
         unsafe {
@@ -415,6 +474,51 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_concurrent_custom_model_additions_preserve_both_models() {
+        let temp_dir = std::env::temp_dir().join("omo_test_concurrent_add_models");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("创建临时目录失败");
+
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &temp_dir);
+        }
+
+        let first = std::thread::spawn(|| {
+            add_custom_model_blocking("test-provider".to_string(), "model-a".to_string())
+        });
+        let second = std::thread::spawn(|| {
+            add_custom_model_blocking("test-provider".to_string(), "model-b".to_string())
+        });
+
+        assert!(first.join().expect("第一个写入线程失败").is_ok());
+        assert!(second.join().expect("第二个写入线程失败").is_ok());
+
+        unsafe {
+            if let Some(home) = original_home {
+                std::env::set_var("HOME", home);
+            } else {
+                std::env::remove_var("HOME");
+            }
+        }
+
+        let config_path = temp_dir
+            .join(".config")
+            .join("opencode")
+            .join("opencode.json");
+        let content = std::fs::read_to_string(config_path).expect("读取配置文件失败");
+        let config: Value = serde_json::from_str(&content).expect("解析配置文件失败");
+        let models = config["provider"]["test-provider"]["models"]
+            .as_object()
+            .expect("models 应为对象");
+        assert!(models.contains_key("model-a"));
+        assert!(models.contains_key("model-b"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    #[serial]
     fn test_remove_custom_model() {
         let temp_dir = std::env::temp_dir().join("omo_test_remove_model");
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -425,10 +529,11 @@ mod tests {
             std::env::set_var("HOME", &temp_dir);
         }
 
-        let add_result = add_custom_model("test-provider".to_string(), "test-model-3".to_string());
+        let add_result =
+            add_custom_model_blocking("test-provider".to_string(), "test-model-3".to_string());
         assert!(add_result.is_ok());
         let remove_result =
-            remove_custom_model("test-provider".to_string(), "test-model-3".to_string());
+            remove_custom_model_blocking("test-provider".to_string(), "test-model-3".to_string());
         assert!(
             remove_result.is_ok(),
             "删除模型应该成功: {:?}",
@@ -470,9 +575,12 @@ mod tests {
             std::env::set_var("HOME", &temp_dir);
         }
 
-        let _ = add_custom_model("test-provider".to_string(), "existing-model".to_string());
-        let result =
-            remove_custom_model("test-provider".to_string(), "nonexistent-model".to_string());
+        let _ =
+            add_custom_model_blocking("test-provider".to_string(), "existing-model".to_string());
+        let result = remove_custom_model_blocking(
+            "test-provider".to_string(),
+            "nonexistent-model".to_string(),
+        );
 
         unsafe {
             if let Some(home) = original_home {

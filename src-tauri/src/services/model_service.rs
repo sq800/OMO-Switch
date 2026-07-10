@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::services::provider_store;
+use crate::services::{get_home_dir, provider_store};
 
 /// 模型信息结构体 - 从 models.dev API 获取的模型详细信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,10 +85,12 @@ struct ConnectedProvidersCache {
     updated_at: String,
 }
 
-/// models.dev API 响应结构（简化版）
+/// models.dev API 顶层结构：provider ID 到 provider 数据的映射
+type ModelsDevResponse = HashMap<String, ModelsDevProvider>;
+
 #[derive(Debug, Deserialize)]
-struct ModelsDevResponse {
-    models: Vec<ModelsDevModel>,
+struct ModelsDevProvider {
+    models: HashMap<String, ModelsDevModel>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,22 +98,19 @@ struct ModelsDevModel {
     id: String,
     name: Option<String>,
     description: Option<String>,
-    pricing: Option<ModelsDevPricing>,
+    cost: Option<ModelsDevCost>,
 }
 
 #[derive(Debug, Deserialize)]
-struct ModelsDevPricing {
-    prompt: Option<f64>,
-    completion: Option<f64>,
-    currency: Option<String>,
+struct ModelsDevCost {
+    input: Option<f64>,
+    output: Option<f64>,
 }
 
 /// 获取缓存目录路径（与 oh-my-opencode CLI 保持一致）
 /// 统一使用 ~/.cache/oh-my-opencode/
 fn get_cache_dir() -> Result<PathBuf, String> {
-    std::env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".cache").join("oh-my-opencode"))
-        .map_err(|_| "无法获取 HOME 环境变量".to_string())
+    Ok(get_home_dir()?.join(".cache").join("oh-my-opencode"))
 }
 
 /// 获取可用模型列表，按提供商分组（缓存快照）
@@ -175,20 +174,13 @@ fn get_opencode_models_total_timeout_secs() -> u64 {
 }
 
 fn build_opencode_path_env() -> Option<String> {
-    let home = env::var("HOME").ok()?;
-    let opencode_bin = PathBuf::from(home).join(".opencode").join("bin");
-    let opencode_bin_str = opencode_bin.to_string_lossy().to_string();
-    let current_path = env::var("PATH").unwrap_or_default();
-    if current_path
-        .split(':')
-        .any(|p| p == opencode_bin.as_os_str().to_string_lossy())
-    {
-        Some(current_path)
-    } else if current_path.is_empty() {
-        Some(opencode_bin_str)
-    } else {
-        Some(format!("{}:{}", opencode_bin_str, current_path))
+    let opencode_bin = get_home_dir().ok()?.join(".opencode").join("bin");
+    let current_path = env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = env::split_paths(&current_path).collect();
+    if !paths.contains(&opencode_bin) {
+        paths.insert(0, opencode_bin);
     }
+    env::join_paths(paths).ok()?.into_string().ok()
 }
 
 fn build_opencode_candidates() -> Vec<String> {
@@ -208,11 +200,8 @@ fn build_opencode_candidates() -> Vec<String> {
         }
     }
 
-    if let Ok(home) = env::var("HOME") {
-        let home_candidate = PathBuf::from(home)
-            .join(".opencode")
-            .join("bin")
-            .join("opencode");
+    if let Ok(home) = get_home_dir() {
+        let home_candidate = home.join(".opencode").join("bin").join("opencode");
         if home_candidate.exists() {
             push_unique(home_candidate.to_string_lossy().to_string());
         }
@@ -545,6 +534,23 @@ fn read_expired_cache() -> Vec<ModelInfo> {
     Vec::new()
 }
 
+fn parse_models_dev_response(response: ModelsDevResponse) -> Vec<ModelInfo> {
+    response
+        .into_values()
+        .flat_map(|provider| provider.models.into_values())
+        .map(|model| ModelInfo {
+            id: model.id,
+            name: model.name,
+            description: model.description,
+            pricing: model.cost.map(|cost| ModelPricing {
+                prompt: cost.input,
+                completion: cost.output,
+                currency: Some("USD".to_string()),
+            }),
+        })
+        .collect()
+}
+
 /// 从 models.dev API 获取模型详细信息（带本地缓存）
 ///
 /// 策略：
@@ -568,20 +574,12 @@ pub fn fetch_models_dev() -> Result<Vec<ModelInfo>, String> {
         Ok(resp) => {
             match resp.into_json::<ModelsDevResponse>() {
                 Ok(models_dev) => {
-                    let models: Vec<ModelInfo> = models_dev
-                        .models
-                        .into_iter()
-                        .map(|m| ModelInfo {
-                            id: m.id,
-                            name: m.name,
-                            description: m.description,
-                            pricing: m.pricing.map(|p| ModelPricing {
-                                prompt: p.prompt,
-                                completion: p.completion,
-                                currency: p.currency,
-                            }),
-                        })
-                        .collect();
+                    let models = parse_models_dev_response(models_dev);
+
+                    if models.is_empty() {
+                        eprintln!("models.dev API 返回空模型目录，尝试过期缓存");
+                        return Ok(read_expired_cache());
+                    }
 
                     // 写入缓存
                     write_models_dev_cache(&models);
@@ -617,6 +615,58 @@ invalid-line
         assert_eq!(parsed.get("openai").map(|v| v.len()), Some(2));
         assert_eq!(parsed.get("anthropic").map(|v| v.len()), Some(1));
         assert!(!parsed.contains_key("invalid-line"));
+    }
+
+    #[test]
+    fn test_parse_models_dev_response() {
+        let response: ModelsDevResponse = serde_json::from_str(
+            r#"{
+                "openai": {
+                    "id": "openai",
+                    "name": "OpenAI",
+                    "models": {
+                        "gpt-5": {
+                            "id": "gpt-5",
+                            "name": "GPT-5",
+                            "description": "Reasoning model",
+                            "cost": { "input": 2.5, "output": 10 }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .expect("应解析 models.dev 的 provider map 响应");
+
+        let models = parse_models_dev_response(response);
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5");
+        assert_eq!(models[0].name.as_deref(), Some("GPT-5"));
+        let pricing = models[0].pricing.as_ref().expect("应映射模型成本");
+        assert_eq!(pricing.prompt, Some(2.5));
+        assert_eq!(pricing.completion, Some(10.0));
+        assert_eq!(pricing.currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn test_models_dev_response_rejects_old_wrapper_shape() {
+        let result = serde_json::from_str::<ModelsDevResponse>(r#"{"models": []}"#);
+
+        assert!(result.is_err(), "旧的顶层 models 数组结构不应被静默接受");
+    }
+
+    #[test]
+    fn test_parse_models_dev_empty_catalog() {
+        let response = serde_json::from_str::<ModelsDevResponse>("{}").expect("空对象是合法 JSON");
+
+        assert!(parse_models_dev_response(response).is_empty());
+    }
+
+    #[test]
+    fn test_models_dev_response_rejects_malformed_provider_models() {
+        let result = serde_json::from_str::<ModelsDevResponse>(r#"{"openai":{"models":[]}}"#);
+
+        assert!(result.is_err(), "provider models 必须是模型映射");
     }
 
     #[test]

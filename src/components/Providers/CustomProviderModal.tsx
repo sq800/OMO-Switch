@@ -7,7 +7,7 @@ import { addCustomProvider, testProviderConnection } from '../../services/tauri'
 
 interface CustomProviderModalProps {
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess: () => Promise<void>;
 }
 
 export function CustomProviderModal({ onClose, onSuccess }: CustomProviderModalProps) {
@@ -37,7 +37,7 @@ export function CustomProviderModal({ onClose, onSuccess }: CustomProviderModalP
     try {
       await addCustomProvider(name.trim(), apiKey.trim(), baseUrl.trim());
       toast.success(t('provider.addCustomSuccess'));
-      onSuccess();
+      await onSuccess();
       onClose();
     } catch (err) {
       toast.error(t('provider.addCustomFailed'));

@@ -15,12 +15,41 @@ import {
   type VersionInfo,
   type OmoConfig,
   type AgentConfig,
+  getProviderStatus,
+  type ProviderInfo,
 } from '../services/tauri';
 import { usePresetStore } from './presetStore';
 
 interface GroupedModels {
   provider: string;
   models: string[];
+}
+
+let pendingForcedModelsRefresh = false;
+let pendingForcedProviderCatalogRefresh = false;
+let modelsRefreshWaiters: Array<() => void> = [];
+let providerCatalogRefreshWaiters: Array<() => void> = [];
+
+function finishModelsRefresh(runForcedRefresh: () => void) {
+  if (pendingForcedModelsRefresh) {
+    pendingForcedModelsRefresh = false;
+    runForcedRefresh();
+    return;
+  }
+  const waiters = modelsRefreshWaiters;
+  modelsRefreshWaiters = [];
+  waiters.forEach((resolve) => resolve());
+}
+
+function finishProviderCatalogRefresh(runForcedRefresh: () => void) {
+  if (pendingForcedProviderCatalogRefresh) {
+    pendingForcedProviderCatalogRefresh = false;
+    runForcedRefresh();
+    return;
+  }
+  const waiters = providerCatalogRefreshWaiters;
+  providerCatalogRefreshWaiters = [];
+  waiters.forEach((resolve) => resolve());
 }
 
 function isValidUserPreset(name: string | null | undefined, presets: string[]): name is string {
@@ -54,16 +83,24 @@ interface PreloadState {
     loading: boolean;
     error: string | null;
   };
+  providerCatalog: {
+    data: ProviderInfo[] | null;
+    refreshedAt: number | null;
+    refreshing: boolean;
+    error: string | null;
+  };
   isPreloading: boolean;
   preloadComplete: boolean;
   // 请求锁 - 防止重复请求（内部状态，不对外暴露）
   _modelsRefreshing: boolean;
   _omoConfigRefreshing: boolean;
   _versionsRefreshing: boolean;
+  _providerCatalogRefreshing: boolean;
   startPreload: () => void;
   loadOmoConfig: () => Promise<void>;
-  refreshModels: () => Promise<void>;
+  refreshModels: (force?: boolean) => Promise<void>;
   refreshVersions: () => Promise<void>;
+  refreshProviderCatalog: (force?: boolean) => Promise<void>;
   softRefreshAll: () => void;
   retryAll: () => void;
   // 更新 omoConfig 中特定 agent 或 category 的配置
@@ -102,6 +139,13 @@ export const usePreloadStore = create<PreloadState>()(
     error: null,
   },
 
+  providerCatalog: {
+    data: null,
+    refreshedAt: null,
+    refreshing: false,
+    error: null,
+  },
+
   isPreloading: false,
   preloadComplete: false,
 
@@ -109,6 +153,7 @@ export const usePreloadStore = create<PreloadState>()(
   _modelsRefreshing: false,
   _omoConfigRefreshing: false,
   _versionsRefreshing: false,
+  _providerCatalogRefreshing: false,
 
   startPreload: async () => {
     const state = get();
@@ -148,7 +193,11 @@ export const usePreloadStore = create<PreloadState>()(
 
       // 首屏渲染后再后台刷新模型/版本，避免启动阶段堆积重任务
       setTimeout(() => {
-        Promise.allSettled([get().refreshModels(), get().refreshVersions()]);
+        Promise.allSettled([
+          get().refreshModels(),
+          get().refreshProviderCatalog(),
+          get().refreshVersions(),
+        ]);
       }, 1200);
     } finally {
       set({ isPreloading: false, preloadComplete: true });
@@ -194,12 +243,13 @@ loadOmoConfig: async () => {
   }
 },
 
-refreshModels: async () => {
+refreshModels: async (force = false) => {
   const state = get();
 
   // 防止重复请求
   if (state._modelsRefreshing) {
-    return;
+    pendingForcedModelsRefresh ||= force;
+    return new Promise<void>((resolve) => modelsRefreshWaiters.push(resolve));
   }
 
   // 判断是否为首次加载
@@ -241,11 +291,11 @@ refreshModels: async () => {
       });
 
     // 先返回缓存快照，校验在后台进行，避免首屏被 opencode models 阻塞
-    set({
+    set((current) => ({
       models: {
         grouped: groupedFromCache,
         providers: providersData,
-        infos: state.models.infos,
+        infos: current.models.infos,
         source: 'cache_fallback',
         fallbackReason: null,
         validatedAt: null,
@@ -253,10 +303,9 @@ refreshModels: async () => {
         loading: false,
         error: null
       },
-      _modelsRefreshing: false,
-    });
+    }));
 
-    void getAvailableModelsWithStatus()
+    await getAvailableModelsWithStatus()
       .then((modelsResult) => {
         const modelsData = modelsResult.models;
 
@@ -272,6 +321,7 @@ refreshModels: async () => {
 
         // 校验完成后再更新模型来源状态
         set((current) => ({
+          _modelsRefreshing: false,
           models: {
             grouped,
             providers: current.models.providers,
@@ -284,9 +334,11 @@ refreshModels: async () => {
             error: null
           },
         }));
+        finishModelsRefresh(() => void get().refreshModels(true));
       })
       .catch((error) => {
         set((current) => ({
+          _modelsRefreshing: false,
           models: {
             ...current.models,
             validating: false,
@@ -294,6 +346,7 @@ refreshModels: async () => {
             fallbackReason: error instanceof Error ? error.message : '模型校验失败',
           },
         }));
+        finishModelsRefresh(() => void get().refreshModels(true));
       });
 
     // 后台加载 models.dev 详情（不阻塞主流程）
@@ -321,6 +374,7 @@ refreshModels: async () => {
       },
       _modelsRefreshing: false,
     }));
+    finishModelsRefresh(() => void get().refreshModels(true));
   }
 },
 
@@ -357,6 +411,54 @@ refreshVersions: async () => {
       },
       _versionsRefreshing: false,
     }));
+  }
+},
+
+refreshProviderCatalog: async (force = false) => {
+  const state = get();
+  const refreshTtlMs = 5 * 60 * 1000;
+  const isFresh = state.providerCatalog.refreshedAt !== null
+    && Date.now() - state.providerCatalog.refreshedAt < refreshTtlMs;
+
+  if (state._providerCatalogRefreshing || (!force && isFresh)) {
+    pendingForcedProviderCatalogRefresh ||= force;
+    if (state._providerCatalogRefreshing) {
+      return new Promise<void>((resolve) => providerCatalogRefreshWaiters.push(resolve));
+    }
+    return;
+  }
+
+  set((current) => ({
+    _providerCatalogRefreshing: true,
+    providerCatalog: {
+      ...current.providerCatalog,
+      refreshing: true,
+      error: null,
+    },
+  }));
+
+  try {
+    const data = await getProviderStatus();
+    set({
+      _providerCatalogRefreshing: false,
+      providerCatalog: {
+        data,
+        refreshedAt: Date.now(),
+        refreshing: false,
+        error: null,
+      },
+    });
+    finishProviderCatalogRefresh(() => void get().refreshProviderCatalog(true));
+  } catch (error) {
+    set((current) => ({
+      _providerCatalogRefreshing: false,
+      providerCatalog: {
+        ...current.providerCatalog,
+        refreshing: false,
+        error: error instanceof Error ? error.message : '加载供应商数据失败',
+      },
+    }));
+    finishProviderCatalogRefresh(() => void get().refreshProviderCatalog(true));
   }
 },
 
@@ -499,6 +601,12 @@ updateAgentInConfig: (agentName: string, config: AgentConfig) => {
       error: null,
     },
     versions: { data: state.versions.data, loading: false, error: null },
+    providerCatalog: {
+      data: state.providerCatalog.data,
+      refreshedAt: state.providerCatalog.refreshedAt,
+      refreshing: false,
+      error: null,
+    },
   }),
 }
   )

@@ -1,3 +1,4 @@
+import { useDeferredValue } from 'react';
 import { MainLayout } from './components/Layout/MainLayout';
 import { ToastContainer } from './components/common/Toast';
 import { UpdaterModal } from './components/common/UpdaterModal';
@@ -13,9 +14,10 @@ import { useUIStore } from './store/uiStore';
 
 function App() {
   const { currentPage } = useUIStore();
+  const contentPage = useDeferredValue(currentPage);
 
   const renderPage = () => {
-    switch (currentPage) {
+    switch (contentPage) {
       case 'agent':
         return <AgentPage />;
       case 'config':

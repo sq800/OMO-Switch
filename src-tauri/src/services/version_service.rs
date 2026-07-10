@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::services::get_home_dir;
+
 const OMO_PLUGIN_NAMES: [&str; 2] = ["oh-my-openagent", "oh-my-opencode"];
-const OMO_PACKAGE_NAMES: [&str; 2] = ["oh-my-openagent", "oh-my-opencode"];
-const OMO_UPDATE_PACKAGE_NAME: &str = "oh-my-opencode";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct VersionInfo {
@@ -21,21 +22,18 @@ pub struct VersionInfo {
     pub detected_from: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct InstallDetection {
-    version: Option<String>,
-    install_source: String,
-    install_path: String,
-    detected_from: String,
+/// Get opencode current version by executing `opencode --version`
+///
+/// 通过 PATH 查找（which opencode）定位实际安装路径，兼容 npm 全局安装、
+/// scoop、手动安装等场景。3 秒超时防止命令卡住阻塞 UI。
+pub fn get_opencode_version() -> Option<(String, std::path::PathBuf)> {
+    let found = which::which("opencode").ok()?;
+    let version = try_execute_version(&found)?;
+    Some((version, found))
 }
 
-/// Get opencode current version by executing ~/.opencode/bin/opencode --version
-/// 添加 3 秒超时机制，防止命令卡住阻塞 UI
-pub fn get_opencode_version() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let bin_path = format!("{}/.opencode/bin/opencode", home);
-
-    let mut child = Command::new(&bin_path)
+fn try_execute_version(bin_path: &std::path::Path) -> Option<String> {
+    let mut child = Command::new(bin_path)
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -58,13 +56,11 @@ pub fn get_opencode_version() -> Option<String> {
             }
             Ok(Some(_)) => return None, // 命令执行失败
             Ok(None) => {
-                // 还在运行，检查超时
                 if start.elapsed() > timeout {
                     let _ = child.kill();
                     let _ = child.wait();
                     return None;
                 }
-                // 短暂休眠避免忙等待
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(_) => return None,
@@ -72,148 +68,9 @@ pub fn get_opencode_version() -> Option<String> {
     }
 }
 
-fn detect_omo_install() -> Option<InstallDetection> {
-    let home = std::env::var("HOME").ok()?;
-
-    // 1. 当前实际 opencode 运行目录: ~/.opencode/node_modules/<omo-package>/
-    for package_name in OMO_PACKAGE_NAMES {
-        let runtime_pkg = format!(
-            "{}/.opencode/node_modules/{}/package.json",
-            home, package_name
-        );
-        if let Some(version) = read_pkg_version(&runtime_pkg) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "opencode_runtime".to_string(),
-                install_path: format!("{}/.opencode", home),
-                detected_from: runtime_pkg,
-            });
-        }
-    }
-
-    // 2. 当前实际 opencode 运行目录依赖声明: ~/.opencode/package.json
-    let runtime_dep_pkg = format!("{}/.opencode/package.json", home);
-    for package_name in OMO_PACKAGE_NAMES {
-        if let Some(version) = read_dependency_version(&runtime_dep_pkg, package_name) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "opencode_runtime".to_string(),
-                install_path: format!("{}/.opencode", home),
-                detected_from: runtime_dep_pkg.clone(),
-            });
-        }
-    }
-
-    // 3. 本地安装: ~/.config/opencode/node_modules/<omo-package>/
-    for package_name in OMO_PACKAGE_NAMES {
-        let local_pkg = format!(
-            "{}/.config/opencode/node_modules/{}/package.json",
-            home, package_name
-        );
-        if let Some(version) = read_pkg_version(&local_pkg) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "config_local".to_string(),
-                install_path: format!("{}/.config/opencode", home),
-                detected_from: local_pkg,
-            });
-        }
-    }
-
-    // 4. 配置文件: opencode.json/jsonc 的 plugin 字段（兼容 openagent/opencode 插件名）
-    for config_path in get_opencode_config_candidates(&home) {
-        if let Some(version) = read_plugin_version_from_config(&config_path, &OMO_PLUGIN_NAMES) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "config_declared".to_string(),
-                install_path: config_path.clone(),
-                detected_from: config_path,
-            });
-        }
-    }
-
-    // 5. npm 全局安装
-    if let Some(global_root) = get_npm_global_root() {
-        for package_name in OMO_PACKAGE_NAMES {
-            let npm_global_pkg = format!("{}/{}/package.json", global_root, package_name);
-            if let Some(version) = read_pkg_version(&npm_global_pkg) {
-                return Some(InstallDetection {
-                    version: Some(version),
-                    install_source: "npm_global".to_string(),
-                    install_path: global_root.clone(),
-                    detected_from: npm_global_pkg,
-                });
-            }
-        }
-    }
-
-    // 6. bun 全局安装: ~/.bun/install/global/node_modules/<omo-package>/
-    for package_name in OMO_PACKAGE_NAMES {
-        let bun_global = format!(
-            "{}/.bun/install/global/node_modules/{}/package.json",
-            home, package_name
-        );
-        if let Some(version) = read_pkg_version(&bun_global) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "bun_global".to_string(),
-                install_path: format!("{}/.bun/install/global/node_modules", home),
-                detected_from: bun_global,
-            });
-        }
-    }
-
-    // 7. opencode 缓存安装/依赖，作为最后回退
-    for package_name in OMO_PACKAGE_NAMES {
-        let cache_pkg = format!(
-            "{}/.cache/opencode/node_modules/{}/package.json",
-            home, package_name
-        );
-        if let Some(version) = read_pkg_version(&cache_pkg) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "opencode_cache".to_string(),
-                install_path: format!("{}/.cache/opencode", home),
-                detected_from: cache_pkg,
-            });
-        }
-    }
-
-    let cache_dep_pkg = format!("{}/.cache/opencode/package.json", home);
-    for package_name in OMO_PACKAGE_NAMES {
-        if let Some(version) = read_dependency_version(&cache_dep_pkg, package_name) {
-            return Some(InstallDetection {
-                version: Some(version),
-                install_source: "opencode_cache".to_string(),
-                install_path: format!("{}/.cache/opencode", home),
-                detected_from: cache_dep_pkg.clone(),
-            });
-        }
-    }
-
-    None
-}
-
-fn read_pkg_version(path: &str) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let pkg: serde_json::Value = serde_json::from_str(&content).ok()?;
-    pkg.get("version")?.as_str().map(|s| s.to_string())
-}
-
-fn read_dependency_version(path: &str, dep_name: &str) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let pkg: Value = serde_json::from_str(&content).ok()?;
-    pkg.get("dependencies")?
-        .get(dep_name)?
-        .as_str()
-        .map(|s| s.to_string())
-}
-
-fn get_opencode_config_candidates(home: &str) -> Vec<String> {
-    vec![
-        format!("{}/.config/opencode/opencode.json", home),
-        format!("{}/.config/opencode/opencode.jsonc", home),
-    ]
+fn get_opencode_config_candidates(home: &Path) -> Vec<PathBuf> {
+    let base = home.join(".config").join("opencode");
+    vec![base.join("opencode.json"), base.join("opencode.jsonc")]
 }
 
 fn parse_json_or_json5(content: &str) -> Option<Value> {
@@ -239,88 +96,6 @@ fn read_plugin_version_from_config(path: &str, plugin_names: &[&str]) -> Option<
     None
 }
 
-fn get_npm_global_root() -> Option<String> {
-    let output = Command::new("npm")
-        .args(["root", "-g"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if root.is_empty() {
-        None
-    } else {
-        Some(root)
-    }
-}
-
-fn is_omo_installed() -> bool {
-    if detect_omo_install().is_some() {
-        return true;
-    }
-
-    let home = match std::env::var("HOME") {
-        Ok(home) => home,
-        Err(_) => return false,
-    };
-    get_opencode_config_candidates(&home)
-        .iter()
-        .any(|path| is_plugin_declared_in_config(path, &OMO_PLUGIN_NAMES))
-}
-
-fn build_omo_update_command(install_source: Option<&str>) -> (String, String) {
-    match install_source {
-        Some("opencode_runtime") => (
-            format!(
-                "cd ~/.opencode && npm install {}@latest",
-                OMO_UPDATE_PACKAGE_NAME
-            ),
-            "在当前 opencode 运行目录升级：".to_string(),
-        ),
-        Some("npm_global") => (
-            format!("npm install -g {}@latest", OMO_UPDATE_PACKAGE_NAME),
-            "通过 npm 全局升级：".to_string(),
-        ),
-        Some("bun_global") => (
-            format!("bun add -g {}@latest", OMO_UPDATE_PACKAGE_NAME),
-            "通过 bun 全局升级：".to_string(),
-        ),
-        Some("config_local") => (
-            format!(
-                "cd ~/.config/opencode && npm install {}@latest",
-                OMO_UPDATE_PACKAGE_NAME
-            ),
-            "在本地 opencode 配置目录升级：".to_string(),
-        ),
-        Some("config_declared") => (
-            format!(
-                "cd ~/.opencode && npm install {}@latest",
-                OMO_UPDATE_PACKAGE_NAME
-            ),
-            "配置中已声明插件，建议在实际运行目录安装/升级：".to_string(),
-        ),
-        Some("opencode_cache") => (
-            format!(
-                "cd ~/.opencode && npm install {}@latest",
-                OMO_UPDATE_PACKAGE_NAME
-            ),
-            "检测到缓存版本，建议在实际运行目录重新安装：".to_string(),
-        ),
-        _ => (
-            format!(
-                "cd ~/.opencode && npm install {}@latest",
-                OMO_UPDATE_PACKAGE_NAME
-            ),
-            "建议在 opencode 运行目录安装/升级：".to_string(),
-        ),
-    }
-}
-
 fn is_plugin_declared_in_config(path: &str, plugin_names: &[&str]) -> bool {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
@@ -343,6 +118,27 @@ fn is_plugin_declared_in_config(path: &str, plugin_names: &[&str]) -> bool {
             .iter()
             .any(|name| raw == *name || raw.starts_with(&format!("{}@", name)))
     })
+}
+
+fn check_omo_in_config(home: &Path) -> Option<(Option<String>, PathBuf)> {
+    for config_path in get_opencode_config_candidates(home) {
+        let cp_str = config_path.to_string_lossy();
+        if let Some(version) = read_plugin_version_from_config(&cp_str, &OMO_PLUGIN_NAMES) {
+            return Some((Some(version), config_path));
+        }
+        if is_plugin_declared_in_config(&cp_str, &OMO_PLUGIN_NAMES) {
+            return Some((None, config_path));
+        }
+    }
+    None
+}
+
+fn is_omo_installed() -> bool {
+    let home = match get_home_dir() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    check_omo_in_config(&home).is_some()
 }
 
 fn get_npm_latest_version(package_name: &str) -> Option<String> {
@@ -386,11 +182,13 @@ pub fn check_all_versions() -> Vec<VersionInfo> {
     let mut results = Vec::new();
 
     // OpenCode
-    let oc_current = get_opencode_version();
+    let oc_result = get_opencode_version();
+    let oc_current = oc_result.as_ref().map(|(v, _)| v.clone());
+    let oc_path = oc_result.as_ref().map(|(_, p)| p.to_string_lossy().to_string());
     let oc_latest = get_opencode_latest_version();
     results.push(VersionInfo {
         name: "OpenCode".to_string(),
-        installed: oc_current.is_some(),
+        installed: oc_result.is_some(),
         current_version: oc_current.clone(),
         latest_version: oc_latest.clone(),
         has_update: match (&oc_current, &oc_latest) {
@@ -399,36 +197,51 @@ pub fn check_all_versions() -> Vec<VersionInfo> {
         },
         update_command: "opencode upgrade".to_string(),
         update_hint: "Run 'opencode upgrade' in terminal".to_string(),
-        install_source: Some("opencode_runtime".to_string()),
-        install_path: std::env::var("HOME")
-            .ok()
-            .map(|home| format!("{}/.opencode/bin/opencode", home)),
-        detected_from: std::env::var("HOME")
-            .ok()
-            .map(|home| format!("{}/.opencode/bin/opencode", home)),
+        install_source: None,
+        install_path: oc_path.clone(),
+        detected_from: oc_path,
     });
 
     // Oh My OpenAgent
-    let omo_detection = detect_omo_install();
-    let omo_current = omo_detection.as_ref().and_then(|d| d.version.clone());
+    let mut omo_current;
+    let omo_config_path;
+    let omo_installed;
+    if let Ok(home) = get_home_dir() {
+        if let Some((version, config_path)) = check_omo_in_config(&home) {
+            omo_current = version;
+            omo_config_path = Some(config_path.to_string_lossy().to_string());
+            omo_installed = true;
+        } else {
+            omo_current = None;
+            omo_config_path = None;
+            omo_installed = is_omo_installed();
+        }
+    } else {
+        omo_current = None;
+        omo_config_path = None;
+        omo_installed = false;
+    }
+
+    let omo_is_latest = omo_current.as_deref() == Some("latest");
     let omo_latest = get_omo_latest_version();
+    if omo_is_latest {
+        omo_current = omo_latest.clone();
+    }
     let has_update = match (&omo_current, &omo_latest) {
-        (Some(c), Some(l)) => has_newer_version(c, l),
+        (Some(c), Some(l)) if !omo_is_latest => has_newer_version(c, l),
         _ => false,
     };
-    let (update_command, update_hint) =
-        build_omo_update_command(omo_detection.as_ref().map(|d| d.install_source.as_str()));
     results.push(VersionInfo {
         name: "Oh My OpenAgent".to_string(),
-        installed: is_omo_installed(),
-        current_version: omo_current.clone(),
-        latest_version: omo_latest.clone(),
+        installed: omo_installed,
+        current_version: omo_current,
+        latest_version: omo_latest,
         has_update,
-        update_command,
-        update_hint,
-        install_source: omo_detection.as_ref().map(|d| d.install_source.clone()),
-        install_path: omo_detection.as_ref().map(|d| d.install_path.clone()),
-        detected_from: omo_detection.as_ref().map(|d| d.detected_from.clone()),
+        update_command: "bunx oh-my-openagent install".to_string(),
+        update_hint: "Run 'bunx oh-my-openagent install' in terminal".to_string(),
+        install_source: None,
+        install_path: omo_config_path.clone(),
+        detected_from: omo_config_path,
     });
 
     results

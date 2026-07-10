@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Server,
@@ -92,7 +92,7 @@ interface ProviderCardProps {
   onModelAdded: () => void;
 }
 
-function ProviderCard({ provider, models, providerModels, customModels, onModelAdded }: ProviderCardProps) {
+const ProviderCard = memo(function ProviderCard({ provider, models, providerModels, customModels, onModelAdded }: ProviderCardProps) {
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -305,13 +305,15 @@ function ProviderCard({ provider, models, providerModels, customModels, onModelA
         )}
       </div>
 
-      <AddModelModal
-        isOpen={isModalOpen}
-        onClose={handleCloseModal}
-        currentProviderId={provider.name}
-        providerModels={providerModels}
-        onModelAdded={onModelAdded}
-      />
+      {isModalOpen && (
+        <AddModelModal
+          isOpen={isModalOpen}
+          onClose={handleCloseModal}
+          currentProviderId={provider.name}
+          providerModels={providerModels}
+          onModelAdded={onModelAdded}
+        />
+      )}
 
       {applyModal && (
         <ApplyModelModal
@@ -323,7 +325,7 @@ function ProviderCard({ provider, models, providerModels, customModels, onModelA
       )}
     </>
   );
-}
+});
 
 function ProviderGroup({
   title,
@@ -459,12 +461,6 @@ export function ProviderStatus() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    refreshModels().catch(() => {
-      // 校验失败由后续加载逻辑兜底
-    });
-  }, [refreshModels]);
-
-  useEffect(() => {
     let hasLocalCache = false;
 
     try {
@@ -552,15 +548,15 @@ export function ProviderStatus() {
     };
   }, [providers]);
 
-  async function handleModelAdded() {
+  const handleModelAdded = useCallback(async () => {
     try {
-      await refreshModels();
+      await refreshModels(true);
       const customModels = await getCustomModels();
       setCustomModelsData(customModels);
     } catch (error) {
       console.error('[ProviderStatus] Failed to refresh models:', error);
     }
-  }
+  }, [refreshModels]);
 
   const initialLoading = (!groupedModels || !connectedProviderIds || !customModelsLoaded) && !error;
 

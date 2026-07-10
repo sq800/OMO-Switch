@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::services::get_home_dir;
+
 // ============================================================================
 // 数据结构定义
 // ============================================================================
@@ -43,9 +45,7 @@ pub struct ConfigChange {
 /// 获取缓存目录路径（与 oh-my-opencode CLI 保持一致）
 /// 统一使用 ~/.cache/oh-my-opencode/
 fn get_cache_dir() -> Result<PathBuf, String> {
-    std::env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".cache").join("oh-my-opencode"))
-        .map_err(|_| "无法获取 HOME 环境变量".to_string())
+    Ok(get_home_dir()?.join(".cache").join("oh-my-opencode"))
 }
 
 /// 获取配置快照文件路径

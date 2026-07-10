@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::i18n;
 use crate::services::config_service::{read_omo_config, validate_config, write_omo_config};
+use crate::services::get_home_dir;
 
 const DEFAULT_MAX_BACKUP_RECORDS: usize = 10;
 const MAX_BACKUP_RECORDS_UPPER: usize = 500;
@@ -29,8 +30,7 @@ fn normalize_max_backup_records(value: usize) -> usize {
 }
 
 fn get_settings_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-    Ok(PathBuf::from(home)
+    Ok(get_home_dir()?
         .join(".config")
         .join("OMO-Switch")
         .join("import-export-settings.json"))
@@ -90,8 +90,7 @@ fn save_settings(settings: &ImportExportSettings) -> Result<(), String> {
 }
 
 fn get_managed_backup_entries_with_ts() -> Result<Vec<(PathBuf, u64)>, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-    let backup_dir = PathBuf::from(home)
+    let backup_dir = get_home_dir()?
         .join(".config")
         .join("opencode")
         .join("backups");
@@ -276,9 +275,7 @@ fn backup_current_config_with_prefix(prefix: &str) -> Result<PathBuf, String> {
     let config = read_omo_config()?;
 
     // 获取配置文件所在目录
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-
-    let config_dir = PathBuf::from(home).join(".config").join("opencode");
+    let config_dir = get_home_dir()?.join(".config").join("opencode");
 
     // 创建备份目录
     let backup_dir = config_dir.join("backups");
@@ -309,8 +306,7 @@ fn backup_current_config_with_prefix(prefix: &str) -> Result<PathBuf, String> {
 }
 
 fn ensure_backup_path(path: &str) -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-    let backup_dir = PathBuf::from(home)
+    let backup_dir = get_home_dir()?
         .join(".config")
         .join("opencode")
         .join("backups");
@@ -380,8 +376,7 @@ pub fn export_backup_entry(path: &str, target_path: &str) -> Result<(), String> 
 
 /// 清空备份历史
 pub fn clear_backup_history() -> Result<usize, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-    let backup_dir = PathBuf::from(home)
+    let backup_dir = get_home_dir()?
         .join(".config")
         .join("opencode")
         .join("backups");
@@ -414,9 +409,7 @@ pub fn clear_backup_history() -> Result<usize, String> {
 /// - `Ok(Vec<BackupInfo>)`: 历史记录列表
 /// - `Err(String)`: 获取失败，包含错误信息
 pub fn get_backup_history() -> Result<Vec<BackupInfo>, String> {
-    let home = std::env::var("HOME").map_err(|_| i18n::tr_current("home_env_var_error"))?;
-
-    let backup_dir = PathBuf::from(home)
+    let backup_dir = get_home_dir()?
         .join(".config")
         .join("opencode")
         .join("backups");
