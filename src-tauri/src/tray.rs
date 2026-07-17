@@ -112,18 +112,25 @@ pub fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(icon) = macos_tray_icon() {
             tray_builder = tray_builder.icon(icon).icon_as_template(true);
         } else {
-            // 降级：使用默认图标
-            let icon_bytes = include_bytes!("../icons/32x32.png");
-            let icon = Image::new_owned(icon_bytes.to_vec(), 32, 32);
-            tray_builder = tray_builder.icon(icon);
+            // 降级：解码 PNG 为 RGBA 像素，不能用 new_owned 直接塞 PNG 字节
+            match Image::from_bytes(include_bytes!("../icons/32x32.png")) {
+                Ok(icon) => tray_builder = tray_builder.icon(icon),
+                Err(err) => eprintln!("加载降级托盘图标失败: {err}"),
+            }
         }
     }
 
+    // Windows/Linux：使用专用托盘图标（主体放大填满画布，四周留少量对称边距），
+    // 避免 32x32.png 作为应用图标留下的过宽透明边距导致托盘里看起来偏小。
+    // 提供 32（标准）与 64（@2x，供高 DPI 任务栏）两份。
+    // 注意：必须用 from_bytes 解码 PNG——Image::new_owned 的第一个参数是
+    // 原始 RGBA 像素而非 PNG 字节，直接塞 PNG 压缩流会导致托盘图标透明/空白。
     #[cfg(not(target_os = "macos"))]
     {
-        let icon_bytes = include_bytes!("../icons/32x32.png");
-        let icon = Image::new_owned(icon_bytes.to_vec(), 32, 32);
-        tray_builder = tray_builder.icon(icon);
+        match Image::from_bytes(include_bytes!("../icons/tray/win/tray-32.png")) {
+            Ok(icon) => tray_builder = tray_builder.icon(icon),
+            Err(err) => eprintln!("加载托盘图标失败: {err}"),
+        }
     }
 
     let _tray = tray_builder.build(app)?;
