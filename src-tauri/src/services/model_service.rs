@@ -9,7 +9,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use crate::services::{get_home_dir, provider_store};
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// 模型信息结构体 - 从 models.dev API 获取的模型详细信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,6 +236,8 @@ fn run_opencode_models_with_command(
     cmd.args(["models"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
 
     if let Some(path_env) = build_opencode_path_env() {
         cmd.env("PATH", path_env);

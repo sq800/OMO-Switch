@@ -4,7 +4,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use crate::services::get_home_dir;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const OMO_PLUGIN_NAMES: [&str; 2] = ["oh-my-openagent", "oh-my-opencode"];
 
@@ -33,12 +39,13 @@ pub fn get_opencode_version() -> Option<(String, std::path::PathBuf)> {
 }
 
 fn try_execute_version(bin_path: &std::path::Path) -> Option<String> {
-    let mut child = Command::new(bin_path)
-        .arg("--version")
+    let mut cmd = Command::new(bin_path);
+    cmd.arg("--version")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut child = cmd.spawn().ok()?;
 
     let timeout = Duration::from_secs(3);
     let start = Instant::now();
